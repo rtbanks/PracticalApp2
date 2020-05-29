@@ -1,17 +1,15 @@
 import sys
-import pandas as pd
-import matplotlib.pyplot as plt
-import numpy as np
 import math as m
 from pyspark.sql import functions as f
-from pyspark.sql import udf
 from pyspark.sql import SparkSession
 from pyspark.sql import *
 from pyspark.sql.types import IntegerType, FloatType
-from pyspark.sql import Row, Column
+from pyspark.ml.regression import LinearRegression
+from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.ml.pipeline import *
 from pyspark import SparkFiles
-from pyspark.ml.feature import StandardScaler
-from pyspark.ml.linalg import DenseVector
+from pyspark.ml.feature import *
+
 
 spark = SparkSession.builder.appName("PracticalApplication").getOrCreate()
 
@@ -96,81 +94,55 @@ data = data.withColumn("DepSin", udfgetsin("DepTime"))\
                         .withColumn("DepCos", udfgetcos("DepTime"))\
                         .withColumn("DayOfWeekSin", udfgetsindays("DayOfWeek"))\
                         .withColumn("DayOfWeekCos", udfgetcosdays("DayOfWeek"))
+data = data.drop("DayOfWeek")
 data = data.fillna(0)
-
 data.show()
 
+#Defining stages for string indexing and one hot encoding
+#Define stage 1
+stage_1 = StringIndexer(inputCol="UniqueCarrier", outputCol="UniqueCarrierIndex")
+#Define stage 2
+stage_2 = StringIndexer(inputCol="Origin", outputCol="OriginIndex")
+#Define stage 3
+stage_3 = StringIndexer(inputCol="Dest", outputCol="DestIndex")
+#Define stage 4
+stage_4 = OneHotEncoderEstimator(inputCols=[stage_1.getOutputCol(), stage_2.getOutputCol(),
+                                            stage_3.getOutputCol()], outputCols=["UniqueCarrierEncoded",
+                                            "OriginEncoded", "DestEncoded"])
+#Define stage 5
+stage_5 = VectorAssembler(inputCols= ['Year', 'Month', 'DayofMonth', 'UniqueCarrierEncoded',
+                                      'OriginEncoded', 'DestEncoded', 'DepTime', 'DepDelay', 'TaxiOut',
+                                      'CRSArrTime', 'CRSElapsedTime', 'Distance', 'DepSin', 'DepCos',
+                                      'DayOfWeekSin', 'DayOfWeekCos'], outputCol='features')
+#Define stage 6
+stage_6 = LinearRegression(featuresCol='features', labelCol='ArrDelay', maxIter=10, regParam=0.3, elasticNetParam=0.8)
 
+#Organizing stages of pipeline
+pipline = Pipeline(stages=[stage_1, stage_2, stage_3, stage_4, stage_5, stage_6])
 
-
-
-
-
-
-#import pandas as pd
-#from pyspark.ml.feature import VectorAssembler
-#from pyspark.ml.feature import StringIndexer
-
-
-#data.select("ArrDelay", "DepDelay", "Distance", "TaxiOut").describe().show()
-#Convert string values to index inorder to pass throught to vectors
-#data_delay = data.select("ArrDelay", "Month", "DayOfWeek", "DepTime", "UniqueCarrier", "DepDelay", "Origin", "Dest", "Distance", "TaxiOut")
-#SI_ArrDelay = StringIndexer(inputCol='ArrDelay', outputCol='ArrDelay_Index')
-#SI_DepTime = StringIndexer(inputCol='DepTime', outputCol='DepTime_Index')
-#SI_UniqueCarrier = StringIndexer(inputCol='UniqueCarrier', outputCol='UniqueCarrier_Index')
-#SI_DepDelay = StringIndexer(inputCol='DepDelay', outputCol='DepDelay_Index')
-#SI_Origin = StringIndexer(inputCol='Origin', outputCol='Origin_Index')
-#SI_Dest = StringIndexer(inputCol='Dest', outputCol='Dest_Index')
-#SI_TaxiOut = StringIndexer(inputCol='TaxiOut', outputCol='TaxiOut_Index')
-#Transform data
-#data_delay = SI_ArrDelay.fit(data_delay).transform(data_delay)
-#data_delay = SI_DepTime.fit(data_delay).transform(data_delay)
-#data_delay = SI_UniqueCarrier.fit(data_delay).transform(data_delay)
-#data_delay = SI_DepDelay.fit(data_delay).transform(data_delay)
-#data_delay = SI_Origin.fit(data_delay).transform(data_delay)
-#data_delay = SI_Dest.fit(data_delay).transform(data_delay)
-#data_delay = SI_TaxiOut.fit(data_delay).transform(data_delay)
-#Select data that will be used for analysis
-#data_delay.select('ArrDelay', 'ArrDelay_Index', 'DepTime', 'DepTime_Index', 'UniqueCarrier', 'UniqueCarrier_Index', 'DepDelay', 'DepDelay_Index', 'Origin', 'Origin_Index', 'Dest', 'Dest_Index', 'TaxiOut', 'TaxiOut_Index').show(10)
-#Establish vectors for training and testing
-#vectorAssembler = VectorAssembler(inputCols = ['Month', 'DayOfWeek', 'DepTime_Index', 'UniqueCarrier_Index', 'DepDelay_Index', 'Origin_Index', 'Dest_Index', 'Distance', 'TaxiOut_Index'], outputCol = 'features')
-#data_v = vectorAssembler.transform(data_delay)
-#data_v = data_v.select(['features', 'ArrDelay_Index'])
-#data_v.show(3)
 #Partition data for testing and training
-#train_data, test_data = data_v.randomSplit([.8,.2], seed=1234)
-#train_data.show(3)
-#test_data.show(3)
+train_data, test_data = data.randomSplit([.8,.2], seed=1234)
+train_data.show(3)
+test_data.show(3)
+#fitting the linear model to the pipeline
+linearModel = pipline.fit(train_data)
+lrm = linearModel.stages[-1]
+#Printing statistics measures from the training data
+#print("Coefficients:" + str(lrm.coefficients))
+print("Intercept:" + str(lrm.intercept))
 
-#from pyspark.ml.regression import LinearRegression
-from pyspark.ml.evaluation import RegressionEvaluator
-#Set values for linear regression and print results
-#lr = LinearRegression(featuresCol='features', labelCol='ArrDelay_Index', maxIter=10, regParam=0.3, elasticNetParam=0.8)
-#lr_model = lr.fit(train_data)
-#print("Coefficients:" + str(lr_model.coefficients))
-#print("Intercept:" + str(lr_model.intercept))
+trainingSummary = lrm.summary
+print("RMSE: %f" % trainingSummary.rootMeanSquaredError)
+print("r2: %f" % trainingSummary.r2)
 
-#trainingSummary = lr_model.summary
-#print("RMSE: %f" % trainingSummary.rootMeanSquaredError)
-#print("r2: %f" % trainingSummary.r2)
 
-#train_data.describe().show()
-
-#lr_predictions = lr_model.transform(test_data)
-#lr_predictions.select("prediction", "ArrDelay_Index", "features").show(5)
-#lr_evaluator = RegressionEvaluator(predictionCol="prediction", labelCol="ArrDelay_Index", metricName="r2")
-
-#print("R Squared on test data = %g" % lr_evaluator.evaluate(lr_predictions))
-
-#test_result = lr_model.evaluate(test_data)
-#print("Root Mean Squared Error on test data = %g" % test_result.rootMeanSquaredError)
-
-#print("numIterations: %d" % trainingSummary.totalIterations)
-#print("objectiveHistory: %s" % str(trainingSummary.objectiveHistory))
-#trainingSummary.residuals.show()
-
-#predictions = lr_model.transform(test_data)
-#predictions.select("prediction", "ArrDelay_Index", "features").show()
+#Predictions for linear model and printing out statistics metrics
+predictions = linearModel.transform(test_data)
+predictions.select("prediction", "ArrDelay", "features").show(20)
+r2evaluator = RegressionEvaluator(predictionCol="prediction", labelCol="ArrDelay", metricName="r2")
+rmseEvaluator = RegressionEvaluator(predictionCol="prediction", labelCol="ArrDelay", metricName="rmse")
+print("R Squared on test data = %g" % r2evaluator.evaluate(predictions))
+print("Root Mean Squared Error on test data = %g" % rmseEvaluator.evaluate(predictions))
 
 spark.stop()
 
